@@ -683,8 +683,6 @@ function prepareTransportStack(config){
             }
             else {
                 apply(config, {
-                    channel: query.xdm_c,
-                    remote: query.xdm_e,
                     useParent: !undef(query.xdm_pa),
                     usePolling: !undef(query.xdm_po),
                     useResize: config.useParent ? false : config.useResize
@@ -701,7 +699,9 @@ function prepareTransportStack(config){
             stackEls = [new easyXDM.stack.PostMessageTransport(config)];
             break;
         case "2":
-            config.remoteHelper = resolveUrl(config.remoteHelper);
+            if (config.isHost) {
+                config.remoteHelper = resolveUrl(config.remoteHelper);
+            }
             stackEls = [new easyXDM.stack.NameTransport(config), new easyXDM.stack.QueueBehavior(), new easyXDM.stack.VerifyBehavior({
                 initiate: config.isHost
             })];
@@ -783,7 +783,7 @@ function removeFromStack(element){
 /** 
  * @class easyXDM
  * A javascript library providing cross-browser, cross-domain messaging/RPC.
- * @version 2.4.17.1
+ * @version 2.4.20.7
  * @singleton
  */
 apply(easyXDM, {
@@ -791,7 +791,7 @@ apply(easyXDM, {
      * The version of the library
      * @type {string}
      */
-    version: "2.4.17.1",
+    version: "2.4.20.7",
     /**
      * This is a map containing all the query parameters passed to the document.
      * All the values has been decoded using decodeURIComponent.
@@ -974,6 +974,9 @@ easyXDM.DomHelper = {
          * @namespace easyXDM.fn
          */
         get: function(name, del){
+            if (!_map.hasOwnProperty(name)) {
+                return;
+            }
             var fn = _map[name];
             
             if (del) {
@@ -1447,7 +1450,11 @@ easyXDM.stack.FlashTransport = function(config){
         }
         
         // create the object/embed
-        var flashVars = "callback=flash_loaded" + domain.replace(/[\-.]/g, "_") + "&proto=" + global.location.protocol + "&domain=" + getDomainName(global.location.href) + "&port=" + getPort(global.location.href) + "&ns=" + namespace;
+        var flashVars = "callback=flash_loaded" + encodeURIComponent(domain.replace(/[\-.]/g, "_"))
+            + "&proto=" + global.location.protocol
+            + "&domain=" + encodeURIComponent(getDomainName(global.location.href))
+            + "&port=" + encodeURIComponent(getPort(global.location.href))
+            + "&ns=" + encodeURIComponent(namespace);
         swfContainer.innerHTML = "<object height='20' width='20' type='application/x-shockwave-flash' id='" + id + "' data='" + url + "'>" +
         "<param name='allowScriptAccess' value='always'></param>" +
         "<param name='wmode' value='transparent'>" +
@@ -1626,9 +1633,32 @@ easyXDM.stack.PostMessageTransport = function(config){
      * @param {Object} event The messageevent
      */
     function _window_onMessage(event){
+        if (typeof event.data !== "string") {
+            // postMessage also supports passing objects, but easyXDM's messages are always strings
+            return;
+        }
         var origin = _getOrigin(event);
         if (origin == targetOrigin && event.data.substring(0, config.channel.length + 1) == config.channel + " ") {
             pub.up.incoming(event.data.substring(config.channel.length + 1), origin);
+        }
+    }
+
+    
+    /**
+     * This adds the listener for messages when the frame is ready.
+     * @private
+     * @param {Object} event The messageevent
+     */
+    // add the event handler for listening
+    function _window_waitForReady(event){  
+        if (event.data == config.channel + "-ready") {
+            // replace the eventlistener
+            callerWindow = ("postMessage" in frame.contentWindow) ? frame.contentWindow : frame.contentWindow.document;
+            un(window, "message", _window_waitForReady);
+            on(window, "message", _window_onMessage);
+            setTimeout(function(){
+                pub.up.callback(true);
+            }, 0);
         }
     }
     
@@ -1640,6 +1670,7 @@ easyXDM.stack.PostMessageTransport = function(config){
             }
         },
         destroy: function(){
+            un(window, "message", _window_waitForReady);
             un(window, "message", _window_onMessage);
             if (frame) {
                 callerWindow = null;
@@ -1650,19 +1681,7 @@ easyXDM.stack.PostMessageTransport = function(config){
         onDOMReady: function(){
             targetOrigin = getLocation(config.remote);
             if (config.isHost) {
-                // add the event handler for listening
-                var waitForReady = function(event){  
-                    if (event.data == config.channel + "-ready") {
-                        // replace the eventlistener
-                        callerWindow = ("postMessage" in frame.contentWindow) ? frame.contentWindow : frame.contentWindow.document;
-                        un(window, "message", waitForReady);
-                        on(window, "message", _window_onMessage);
-                        setTimeout(function(){
-                            pub.up.callback(true);
-                        }, 0);
-                    }
-                };
-                on(window, "message", waitForReady);
+                on(window, "message", _window_waitForReady);
                 
                 // set up the iframe
                 apply(config.props, {
@@ -2129,7 +2148,6 @@ easyXDM.stack.ReliableBehavior = function(config){
                 currentMessage = "";
                 if (callback) {
                     callback(true);
-                    callback = null;
                 }
             }
             if (message.length > 0) {
